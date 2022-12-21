@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <dirent.h>
 #include <string.h>
+#include <stdbool.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <pcre.h>
@@ -15,6 +16,76 @@
 #define ANSI_COLOR_MAGENTA "\x1b[35m"
 #define ANSI_COLOR_CYAN "\x1b[36m"
 #define ANSI_COLOR_RESET "\x1b[0m"
+
+// Function to get the extension of a file
+const char* get_filename_ext(const char* filename) {
+  const char* dot = strrchr(filename, '.');
+  if(!dot || dot == filename) return "";
+  return dot + 1;
+}
+
+// Function to check if a file has a skipped extension
+bool has_skipped_ext(const char* filename, const char* skip_exts[], size_t num_exts) {
+  const char* ext = get_filename_ext(filename);
+  for (size_t i = 0; i < num_exts; i++) {
+    if (strcmp(ext, skip_exts[i]) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+struct dirent* list_files(const char* dir_name, const char* skip_exts[], size_t num_exts, struct dirent* entry) {
+  static DIR* dir = NULL;
+  static bool is_first_call = true;
+
+  if (is_first_call) {
+    // Open directory on first call
+    dir = opendir(dir_name);
+    if (dir == NULL) {
+      // Unable to open directory
+      perror("opendir");
+      return NULL;
+    }
+    is_first_call = false;
+  }
+
+  // Read entry from directory
+  struct dirent* result = readdir(dir);
+  if (result == NULL) {
+    // End of directory reached
+    closedir(dir);
+    dir = NULL;
+    is_first_call = true;
+    return NULL;
+  }
+
+  // Check if this is a regular file
+  if (result->d_type == DT_REG) {
+    // Check if the file has a skipped extension
+    if (!has_skipped_ext(result->d_name, skip_exts, num_exts)) {
+      // Set entry values
+      entry->d_ino = result->d_ino;
+      entry->d_off = result->d_off;
+      entry->d_reclen = result->d_reclen;
+      entry->d_type = result->d_type;
+      strncpy(entry->d_name, result->d_name, sizeof(entry->d_name));
+      return entry;
+    }
+  }
+  // Recurse if this is a directory
+  else if (result->d_type == DT_DIR) {
+    char path[1024];
+    if (strcmp(".", result->d_name) == 0 || strcmp("..", result->d_name) == 0) {
+      return list_files(dir_name, skip_exts, num_exts, entry);
+    }
+    snprintf(path, sizeof(path), "%s/%s", dir_name, result->d_name);
+    return list_files(path, skip_exts, num_exts, entry);
+  }
+
+  // Skip entry if it has a skipped extension
+  return list_files(dir_name, skip_exts, num_exts, entry);
+}
 
 int main(int argc, char *argv[]) {
   if (argc < 2) {
@@ -41,21 +112,12 @@ int main(int argc, char *argv[]) {
       continue;
     }
 
-    DIR *dir = opendir(argv[1]);
-    if (dir == NULL) {
-      fprintf(stderr, "%sGet real. %s%s%s doesn't exist or isn't a directory.%s\n", ANSI_COLOR_RED, ANSI_COLOR_RESET, (argv[1]), ANSI_COLOR_RED, ANSI_COLOR_RESET);
-      return 1;
-    }
+    struct dirent entry;
+    struct dirent* result;
 
-    struct dirent *entry;
-
-    while ((entry = readdir(dir)) != NULL) {
-      if (entry->d_type != DT_REG) {
-        continue;
-      }
-
+    while ((result = list_files(argv[1], (const char*[]){ ".so", ".bin", ".apk", ".ipa", ".svg", ".png", ".jpg", ".ico", ".bmp", ".jpeg", ".gif" }, 11, &entry)) != NULL) {
       char relativeFilePath[PATH_MAX];
-      snprintf(relativeFilePath, sizeof(relativeFilePath), "%s/%s", argv[1], entry->d_name);
+      snprintf(relativeFilePath, sizeof(relativeFilePath), "%s/%s", argv[1], result->d_name);
 
       FILE *file = fopen(relativeFilePath, "r");
 
@@ -114,7 +176,7 @@ int main(int argc, char *argv[]) {
       fclose(file);
     }
 
-    closedir(dir);
+    //closedir(dir);
     pcre_free(regex);
   }
 
